@@ -1,14 +1,13 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 )
@@ -77,20 +76,22 @@ func (s *Server) processConnectionLoop(conn net.Conn) {
 	}()
 
 	log.Println("Received new connection from:", conn.RemoteAddr())
-	reader := bufio.NewReader(conn)
+	respReader := NewRespReader(conn)
 	for {
-		clientMsg, err := reader.ReadString('\n')
+		args, err := respReader.Args()
 		if err != nil {
-			if err != io.EOF {
-				log.Println("Error reading from connection:", err)
+			if errors.Is(err, io.EOF) {
+				log.Println("Connection closed by client:", conn.RemoteAddr())
+				return
 			}
-			return
+			log.Println("Error parsing command:", err)
+			continue
 		}
-		log.Println("Client received:", clientMsg)
-		clientMsg = fmt.Sprint("PONG: ", clientMsg)
-		if _, err := conn.Write([]byte(clientMsg)); err != nil {
-			log.Println("Error writing to connection:", err)
-			return
+		log.Println("Received command:", args)
+		if len(args) == 0 {
+			continue
 		}
+		cmdName := strings.ToUpper(string(args[0]))
+		log.Println("Received command:", cmdName)
 	}
 }
