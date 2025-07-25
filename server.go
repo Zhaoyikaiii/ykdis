@@ -77,6 +77,12 @@ func (s *Server) processConnectionLoop(conn net.Conn) {
 
 	log.Println("Received new connection from:", conn.RemoteAddr())
 	respReader := NewRespReader(conn)
+	c := newConnectionHandler(conn)
+	go func() {
+		if err := c.listenCmdLoop(); err != nil {
+			log.Println("Error in listenCmdLoop for connection", conn.RemoteAddr(), ":", err)
+		}
+	}()
 	for {
 		args, err := respReader.Args()
 		if err != nil {
@@ -87,11 +93,54 @@ func (s *Server) processConnectionLoop(conn net.Conn) {
 			log.Println("Error parsing command:", err)
 			continue
 		}
-		log.Println("Received command:", args)
-		if len(args) == 0 {
-			continue
+		cmd := Command{
+			Name: strings.ToUpper(args[0]),
+			Args: args[1:],
 		}
-		cmdName := strings.ToUpper(string(args[0]))
-		log.Println("Received command:", cmdName)
+		select {
+		case c.cmdCh <- cmd:
+		default:
+			log.Println("Command channel full, dropping command:", cmd.Name, "from", conn.RemoteAddr())
+		}
 	}
+}
+
+type ConnectionHandler struct {
+	conn  net.Conn
+	cmdCh chan Command
+}
+
+func newConnectionHandler(conn net.Conn) *ConnectionHandler {
+	return &ConnectionHandler{
+		conn:  conn,
+		cmdCh: make(chan Command, PerConnectionCmdBufferSize),
+	}
+}
+
+type Command struct {
+	Name string
+	Args []string
+}
+
+func (c *ConnectionHandler) listenCmdLoop() (err error) {
+	for cmd := range c.cmdCh {
+		log.Println(cmd.Name, strings.Join(cmd.Args, " "))
+		switch cmd.Name {
+		case "PING":
+			_, err = c.conn.Write(ping(cmd.Args))
+		case "ECHO":
+			_, err = c.conn.Write(echo(cmd.Args))
+		case "GET":
+			_, err = c.conn.Write(get(cmd.Args))
+		case "SET":
+			_, err = c.conn.Write(set(cmd.Args))
+		default:
+			_, err = c.conn.Write([]byte("-ERR unknown command '" + cmd.Name + "'\r\n"))
+		}
+		if err != nil {
+			return
+		}
+	}
+	log.Println("Command channel closed, stopping command loop for connection:", c.conn.RemoteAddr())
+	return
 }
